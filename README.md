@@ -102,12 +102,13 @@ In `step1_data_pipeline.py`, we engineered **16 domain-specific features** acros
    * `data_allowance_mb`: Converts GB allowance to MB ($1\text{ GB} = 1024\text{ MB}$) to match `data_used_mb`.
    * `data_utilization_ratio`, `voice_utilization_ratio`, `sms_utilization_ratio`: Usage divided by plan allowance.
    * `is_data_underutilized` ($<10\%$ usage — high risk of plan downgrade/cancellation) & `is_data_exhausted` ($\ge 99\%$ usage — throttling frustration).
-3. **Prepaid Recharge Velocity & Dormancy Signals:**
-   * `recharge_velocity_ratio`: $\frac{\text{recharge\_amount\_lkr}}{\text{recharge\_amount\_3mo\_avg\_lkr} + 1.0}$ — captures sudden drop-offs in reload behavior ($<1.0$).
-   * `is_prepaid_inactive_30d`: Binary indicator flagging prepaid users with `days_since_last_recharge > 30`.
-4. **Postpaid Billing Shock & Delinquency Signals:**
-   * `has_overdue_bill`: Binary flag for postpaid subscribers with `overdue_days > 0`.
-   * `bill_to_plan_price_ratio`: $\frac{\text{bill\_amount\_lkr}}{\text{monthly\_price\_lkr} + 1.0}$ — detects out-of-bundle bill shock.
+3. Prepaid Recharge Velocity & Dormancy Signals:
+   - `recharge_velocity_ratio`: $\frac{\text{recharge\_amount\_lkr}}{\text{recharge\_amount\_3mo\_avg\_lkr} + 1.0}$ — captures sudden drop-offs in reload behavior ($<1.0$).
+   - `is_prepaid_inactive_30d`: Binary indicator flagging prepaid users with `days_since_last_recharge > 30`.
+
+4. Postpaid Billing Shock & Delinquency Signals:
+   - `has_overdue_bill`: Binary flag for postpaid subscribers with `overdue_days > 0`.
+   - `bill_to_plan_price_ratio`: $\frac{\text{bill\_amount\_lkr}}{\text{monthly\_price\_lkr} + 1.0}$ — detects out-of-bundle bill shock.
 5. **Customer Support & Multi-Hot App Ecosystem:**
    * `support_status`: Interaction feature combining `is_complaint` and `complaint_resolved` into `No_Complaint`, `Resolved_Complaint`, and `Unresolved_Complaint`.
    * `app_has_fb`, `app_has_whatsapp`, `app_has_youtube`, `app_has_tiktok`, `app_has_netflix`: 5 binary multi-hot indicators parsed from `bundled_apps`.
