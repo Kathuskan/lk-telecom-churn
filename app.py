@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 import joblib
 import pandas as pd
+import xgboost as xgb
 import shap
 import numpy as np
 
@@ -16,32 +17,24 @@ app = FastAPI(
 # Load model bundle at startup
 print("Loading champion model bundle into memory...")
 bundle = joblib.load("churn_model_bundle.pkl")
-champion_name = bundle.get("champion_model_name", "Segmented_Ensemble")
-champion_engine = bundle.get("champion_engine", "histgbm")
+champion_name = bundle.get("champion_model_name", "8_XGBoost_Segmented_Ensemble")
+champion_engine = bundle.get("champion_engine", "xgboost")
 model_pre = bundle["prepaid_model"]
 model_post = bundle["postpaid_model"]
 feature_cols = bundle["feature_cols"]
 cat_cols = bundle["cat_cols"]
 opt_thresh = bundle["optimal_threshold"]
+cat_categories = bundle.get("cat_categories", {})
 
-# Extract exact category mappings from bundle or directly from trained scikit-learn models
-# so single-row inference never scrambles category integer codes!
-def extract_model_categories(model, cat_columns):
-    if "cat_categories" in bundle and bundle["cat_categories"]:
-        return bundle["cat_categories"]
-    try:
-        # Fallback: Access fitted OrdinalEncoder inside HistGradientBoosting's preprocessor
-        ord_encoder = model._preprocessor.named_transformers_['encoder']
-        return {col: list(cats) for col, cats in zip(cat_columns, ord_encoder.categories_)}
-    except Exception:
-        return {}
+# Only initialize shap.TreeExplainer if the model is NOT XGBoost (XGBoost uses native C++ pred_contribs)
+if champion_engine != "xgboost":
+    explainer_pre = shap.TreeExplainer(model_pre)
+    explainer_post = shap.TreeExplainer(model_post)
+else:
+    explainer_pre = None
+    explainer_post = None
 
-pre_categories = extract_model_categories(model_pre, cat_cols)
-post_categories = extract_model_categories(model_post, cat_cols)
-
-# Initialize TreeSHAP explainers for both Prepaid and Postpaid models
-explainer_pre = shap.TreeExplainer(model_pre)
-explainer_post = shap.TreeExplainer(model_post)
+print(f"Successfully loaded {champion_name} ({champion_engine})!")
 
 # Define request body structure using Pydantic v2 Optional types for structural NaNs
 class CustomerPayload(BaseModel):
@@ -133,41 +126,34 @@ def predict_churn(customer: CustomerPayload):
         if contract == 'prepaid':
             model = model_pre
             explainer = explainer_pre
-            cat_map = pre_categories
         elif contract == 'postpaid':
             model = model_post
             explainer = explainer_post
-            cat_map = post_categories
         else:
             raise HTTPException(status_code=400, detail="Invalid contract_type. Must be 'prepaid' or 'postpaid'.")
 
         # 1. Apply the EXACT training category order so single-row inference matches training codes!
         for c in cat_cols:
             if c in df_input.columns:
-                if c in cat_map:
-                    df_input[c] = pd.Categorical(df_input[c], categories=cat_map[c])
+                if c in cat_categories:
+                    df_input[c] = pd.Categorical(df_input[c], categories=cat_categories[c])
                 else:
                     df_input[c] = df_input[c].astype('category')
 
         prob = float(model.predict_proba(df_input[feature_cols])[:, 1][0])
         is_flagged = bool(prob >= opt_thresh)
 
-        # 2. Dynamically prepare feature matrix for TreeSHAP (Supports both HistGBM and XGBoost/LightGBM)
-        if hasattr(model, "_preprocess_X"):
+        # 2. Compute exact TreeSHAP values
+        if champion_engine == "xgboost":
+            # Use XGBoost's native C++ TreeSHAP engine (supports enable_categorical=True natively!)
+            dmat = xgb.DMatrix(df_input[feature_cols], enable_categorical=True)
+            # pred_contribs returns shape (1, n_features + 1), where the last column is the bias/intercept
+            contribs = model.get_booster().predict(dmat, pred_contribs=True)
+            sv = contribs[0][:-1]
+        else:
             # Scikit-Learn HistGradientBoosting internal preprocessor
             X_for_shap = model._preprocess_X(df_input[feature_cols], reset=False)
-        else:
-            # XGBoost / LightGBM native categorical DataFrame support
-            X_for_shap = df_input[feature_cols]
-
-        shap_vals = explainer.shap_values(X_for_shap)
-        # Handle cases where shap_values returns a list (binary classification in some versions) vs 2D array
-        if isinstance(shap_vals, list):
-            sv = shap_vals[1][0]
-        elif len( np.shape(shap_vals) ) == 3:
-            sv = shap_vals[0, :, 1]
-        else:
-            sv = shap_vals[0]
+            sv = explainer.shap_values(X_for_shap)[0]
 
         raw_vals = df_input[feature_cols].iloc[0].to_dict()
 

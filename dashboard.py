@@ -8,14 +8,15 @@ st.set_page_config(page_title="LK Telecom Churn MLOps Portal", layout="wide")
 
 st.title("📡 Sri Lanka Telecom — End-to-End Churn MLOps & Explainable AI")
 st.markdown(
-    "Complete workflow from **Feature Engineering & Data Inspection** $\\rightarrow$ **6-Model Benchmarking** "
-    "$\\rightarrow$ **Champion Model Selection (`6_HistGBM_Segmented_Ensemble`)** $\\rightarrow$ **Real-Time TreeSHAP Inference**."
+    "Complete workflow from **Medallion Feature Engineering** $\\rightarrow$ **9-Model Benchmarking** "
+    "$\\rightarrow$ **Champion Selection (`8_XGBoost_Segmented_Ensemble`)** $\\rightarrow$ **Real-Time TreeSHAP Inference**."
 )
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "🎯 1. Live Subscriber Risk & SHAP Simulator",
-    "🏆 2. Multi-Model Evaluation & Selection",
-    "🔬 3. Feature Engineering & Data Inspection"
+    "🏆 2. 9-Model Benchmark & Threshold ROI",
+    "🔬 3. Feature Engineering & Global TreeSHAP",
+    "🗺️ 4. Sri Lanka Regional & Executive Analytics"
 ])
 
 # ==============================================================================
@@ -73,11 +74,12 @@ with tab1:
             prob = result["churn_probability"] * 100
             thresh = result["optimal_threshold"] * 100
             flagged = result["is_flagged_at_risk"]
+            champ_model = result.get("champion_model", "8_XGBoost_Segmented_Ensemble")
 
             left_col, right_col = st.columns([1, 1.3])
 
             with left_col:
-                st.subheader("🎯 Champion Model Risk Assessment")
+                st.subheader(f"🎯 Risk Assessment ({champ_model})")
                 if flagged:
                     st.error(f"🚨 **HIGH CHURN RISK DETECTED: {prob:.1f}%** (Threshold: {thresh:.1f}%)")
                 else:
@@ -99,10 +101,10 @@ with tab1:
         st.warning(f"Make sure FastAPI (`uvicorn app:app --port 8000`) is running! Error: {e}")
 
 # ==============================================================================
-# TAB 2: MULTI-MODEL BENCHMARKING & CHAMPION SELECTION
+# TAB 2: 9-MODEL BENCHMARKING & THRESHOLD ROI
 # ==============================================================================
 with tab2:
-    st.subheader("🏆 Multi-Model Benchmark Leaderboard (6 Candidate Algorithms)")
+    st.subheader("🏆 9-Model Benchmark Leaderboard")
     if os.path.exists("model_comparison_results.csv"):
         bench_df = pd.read_csv("model_comparison_results.csv")
         best_row = bench_df.iloc[0]
@@ -112,45 +114,42 @@ with tab2:
             f"**Validation PR-AUC:** `{best_row['pr_auc']}` | **ROC-AUC:** `{best_row['roc_auc']}` | "
             f"**Top-10% Decile Lift:** `{best_row['top_10pct_lift']}x`"
         )
-
         st.dataframe(bench_df, use_container_width=True)
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("#### PR-AUC Comparison Across Models")
-            st.bar_chart(bench_df.set_index("model_name")["pr_auc"])
-        with c2:
-            st.markdown("#### Top-10% Decile Lift (Business ROI)")
-            st.bar_chart(bench_df.set_index("model_name")["top_10pct_lift"])
-    else:
-        st.info("Run `python step2_train.py` to generate `model_comparison_results.csv`.")
+    if os.path.exists("assets/fig1_model_benchmark.png"):
+        st.image("assets/fig1_model_benchmark.png", caption="9-Model Validation PR-AUC and Top-10% Decile Lift Comparison")
+
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        if os.path.exists("assets/fig2_threshold_optimization.png"):
+            st.image("assets/fig2_threshold_optimization.png", caption="Precision-Recall Threshold Optimization Curve")
+    with col_t2:
+        if os.path.exists("assets/fig3_decile_lift_roi.png"):
+            st.image("assets/fig3_decile_lift_roi.png", caption="Decile Lift & Cumulative Gain ROI Curve")
 
 # ==============================================================================
-# TAB 3: FEATURE ENGINEERING & DATA INSPECTION
+# TAB 3: FEATURE ENGINEERING & GLOBAL TREESHAP
 # ==============================================================================
 with tab3:
-    st.subheader("🔬 Engineered Features & Churn Signal Inspection")
-    st.markdown("""
-    **Key Domain Features Engineered in `step1_data_pipeline.py`:**
-    * **`recharge_velocity_ratio`**: Ratio of latest recharge amount to 3-month rolling average (detects sudden prepaid drop-off).
-    * **`is_prepaid_inactive_30d`**: Binary flag for prepaid subscribers with $>30$ days since last reload.
-    * **`data_utilization_ratio` & `is_data_exhausted`**: Captures subscribers hitting 100% data cap or underutilizing overpriced plans.
-    * **`support_status`**: Consolidates complaint flags and resolution status into `No_Complaint`, `Resolved_Complaint`, and `Unresolved_Complaint`.
-    """)
+    st.subheader("🔬 Global TreeSHAP Attribution (Prepaid vs. Postpaid Ensembles)")
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        if os.path.exists("shap_global_prepaid.png"):
+            st.image("shap_global_prepaid.png", caption="Global TreeSHAP Beeswarm — Prepaid Subscribers")
+    with col_s2:
+        if os.path.exists("shap_global_postpaid.png"):
+            st.image("shap_global_postpaid.png", caption="Global TreeSHAP Beeswarm — Postpaid Subscribers")
 
-    if os.path.exists("feature_inspection_summary.csv"):
-        feat_df = pd.read_csv("feature_inspection_summary.csv")
-        col_a, col_b = st.columns([1.2, 1])
-        with col_a:
-            st.markdown("#### Numerical Feature Correlation & Missingness Audit")
-            st.dataframe(feat_df, use_container_width=True)
-        with col_b:
-            st.markdown("#### Top 10 Features by Absolute Correlation with Churn")
-            st.bar_chart(feat_df.head(10).set_index("feature")["abs_corr_with_churn"])
-    else:
-        st.info("Run `python step1_inspect_features.py` to generate `feature_inspection_summary.csv`.")
+    if os.path.exists("shap_feature_importance.csv"):
+        st.markdown("#### Global Mean |SHAP| Importance Table")
+        st.dataframe(pd.read_csv("shap_feature_importance.csv").head(15), use_container_width=True)
 
-    if os.path.exists("shap_global_prepaid.png"):
-        st.markdown("---")
-        st.markdown("#### Global TreeSHAP Feature Attribution (Beeswarm Plot)")
-        st.image("shap_global_prepaid.png", caption="Global TreeSHAP impact on Prepaid Churn")
+# ==============================================================================
+# TAB 4: SRI LANKA REGIONAL & EXECUTIVE ANALYTICS
+# ==============================================================================
+with tab4:
+    st.subheader("🗺️ Domain Feature Impact & Sri Lanka 25-District Risk Profile")
+    if os.path.exists("assets/fig4_domain_features.png"):
+        st.image("assets/fig4_domain_features.png", caption="Engineered Domain Features vs. Churn Rate")
+    if os.path.exists("assets/fig5_sri_lanka_districts.png"):
+        st.image("assets/fig5_sri_lanka_districts.png", caption="Churn Rate & Revenue at Risk Across Sri Lanka's 25 Districts")
