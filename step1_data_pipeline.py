@@ -126,7 +126,69 @@ def clean_and_engineer_telecom_data(filepath: str) -> pd.DataFrame:
 
     print(f"   Final Gold dataset shape: {df_gold.shape}")
     return df_gold
+def inspect_and_prove_features(train_df: pd.DataFrame):
+    """Generates statistical proof of engineered numerical & categorical features on the training split."""
+    print("\n6. Inspecting Features & Generating Statistical Proof...")
+    drop_cols = ['customer_id', 'churned', 'complaint_text']
+    feature_cols = [c for c in train_df.columns if c not in drop_cols]
 
+    num_cols = train_df[feature_cols].select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = train_df[feature_cols].select_dtypes(exclude=[np.number]).columns.tolist()
+
+    # 1. Numerical Feature Correlation & Missingness Audit
+    engineered_features = {
+        'days_since_plan_activation', 'data_allowance_mb', 'data_utilization_ratio',
+        'voice_utilization_ratio', 'sms_utilization_ratio', 'is_data_underutilized',
+        'is_data_exhausted', 'recharge_velocity_ratio', 'is_prepaid_inactive_30d',
+        'has_overdue_bill', 'bill_to_plan_price_ratio', 'app_has_fb',
+        'app_has_whatsapp', 'app_has_youtube', 'app_has_tiktok', 'app_has_netflix'
+    }
+
+    corr_rows = []
+    for col in num_cols:
+        corr_val = train_df[col].corr(train_df['churned'])
+        missing_pct = train_df[col].isna().mean() * 100
+        corr_rows.append({
+            "feature": col,
+            "origin": "Engineered (Gold)" if col in engineered_features else "Raw / Cleaned (Silver)",
+            "abs_corr_with_churn": round(abs(float(corr_val)), 4) if pd.notna(corr_val) else 0.0,
+            "raw_corr_with_churn": round(float(corr_val), 4) if pd.notna(corr_val) else 0.0,
+            "missing_pct": round(float(missing_pct), 2)
+        })
+
+    corr_df = pd.DataFrame(corr_rows).sort_values(by="abs_corr_with_churn", ascending=False)
+    corr_df.to_csv("feature_inspection_summary.csv", index=False)
+
+    print("   --- Top 10 Numerical Features by Correlation with Churn ---")
+    print(corr_df.head(10).to_string(index=False))
+
+    # 2. Categorical Feature Impact Proof (Churn Rate Spread Across Categories)
+    cat_proof_rows = []
+    base_churn = train_df['churned'].mean() * 100
+    for c in cat_cols:
+        grp = train_df.groupby(c, observed=False)['churned'].agg(['count', 'mean'])
+        max_cat = grp['mean'].idxmax()
+        min_cat = grp['mean'].idxmin()
+        max_rate = grp['mean'].max() * 100
+        min_rate = grp['mean'].min() * 100
+        cat_proof_rows.append({
+            "categorical_feature": c,
+            "origin": "Engineered (Gold)" if c == "support_status" else "Cleaned (Silver)",
+            "unique_values": train_df[c].nunique(),
+            "highest_risk_group": f"{max_cat} ({max_rate:.2f}%)",
+            "lowest_risk_group": f"{min_cat} ({min_rate:.2f}%)",
+            "risk_spread_pct": round(float(max_rate - min_rate), 2),
+            "max_lift_over_base": round(float(max_rate / base_churn), 2)
+        })
+
+    cat_proof_df = pd.DataFrame(cat_proof_rows).sort_values(by="risk_spread_pct", ascending=False)
+    cat_proof_df.to_csv("categorical_churn_proof.csv", index=False)
+
+    print("\n   --- Top Categorical Features by Churn Risk Spread ---")
+    print(cat_proof_df.head(8).to_string(index=False))
+    print("   Saved 'feature_inspection_summary.csv' and 'categorical_churn_proof.csv'!")
+    
+    
 if __name__ == "__main__":
     gold_df = clean_and_engineer_telecom_data("lk_telecom_synthetic_100k.csv")
     

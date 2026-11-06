@@ -10,32 +10,36 @@ import numpy as np
 app = FastAPI(
     title="LK Telecom Churn & Explainable AI Engine",
     description="Production REST API for real-time customer churn prediction and TreeSHAP root-cause attribution.",
-    version="1.0"
+    version="2.0"
 )
 
 # Load model bundle at startup
-print("Loading model bundle into memory...")
+print("Loading champion model bundle into memory...")
 bundle = joblib.load("churn_model_bundle.pkl")
+champion_name = bundle.get("champion_model_name", "Segmented_Ensemble")
+champion_engine = bundle.get("champion_engine", "histgbm")
 model_pre = bundle["prepaid_model"]
 model_post = bundle["postpaid_model"]
 feature_cols = bundle["feature_cols"]
 cat_cols = bundle["cat_cols"]
 opt_thresh = bundle["optimal_threshold"]
 
-# Extract exact category mappings directly from the trained scikit-learn models
+# Extract exact category mappings from bundle or directly from trained scikit-learn models
 # so single-row inference never scrambles category integer codes!
 def extract_model_categories(model, cat_columns):
+    if "cat_categories" in bundle and bundle["cat_categories"]:
+        return bundle["cat_categories"]
     try:
-        # Access the fitted OrdinalEncoder inside HistGradientBoosting's preprocessor
+        # Fallback: Access fitted OrdinalEncoder inside HistGradientBoosting's preprocessor
         ord_encoder = model._preprocessor.named_transformers_['encoder']
         return {col: list(cats) for col, cats in zip(cat_columns, ord_encoder.categories_)}
     except Exception:
-        return bundle.get("cat_categories", {})
+        return {}
 
 pre_categories = extract_model_categories(model_pre, cat_cols)
 post_categories = extract_model_categories(model_post, cat_cols)
 
-# Initialize TreeSHAP explainers
+# Initialize TreeSHAP explainers for both Prepaid and Postpaid models
 explainer_pre = shap.TreeExplainer(model_pre)
 explainer_post = shap.TreeExplainer(model_post)
 
@@ -109,7 +113,13 @@ class CustomerPayload(BaseModel):
 @app.get("/health")
 def health_check():
     """Public health check endpoint."""
-    return {"status": "healthy", "model_loaded": True, "threshold": opt_thresh}
+    return {
+        "status": "healthy",
+        "model_loaded": True,
+        "champion_model": champion_name,
+        "engine": champion_engine,
+        "threshold": opt_thresh
+    }
 
 @app.post("/predict")
 def predict_churn(customer: CustomerPayload):
@@ -142,14 +152,27 @@ def predict_churn(customer: CustomerPayload):
         prob = float(model.predict_proba(df_input[feature_cols])[:, 1][0])
         is_flagged = bool(prob >= opt_thresh)
 
-        # 2. Use the model's exact internal preprocessor to transform X for TreeSHAP
-        # This guarantees 100% identical feature alignment and encoding between the model and SHAP
-        X_transformed = model._preprocess_X(df_input[feature_cols], reset=False)
-        shap_vals = explainer.shap_values(X_transformed)[0]
+        # 2. Dynamically prepare feature matrix for TreeSHAP (Supports both HistGBM and XGBoost/LightGBM)
+        if hasattr(model, "_preprocess_X"):
+            # Scikit-Learn HistGradientBoosting internal preprocessor
+            X_for_shap = model._preprocess_X(df_input[feature_cols], reset=False)
+        else:
+            # XGBoost / LightGBM native categorical DataFrame support
+            X_for_shap = df_input[feature_cols]
+
+        shap_vals = explainer.shap_values(X_for_shap)
+        # Handle cases where shap_values returns a list (binary classification in some versions) vs 2D array
+        if isinstance(shap_vals, list):
+            sv = shap_vals[1][0]
+        elif len( np.shape(shap_vals) ) == 3:
+            sv = shap_vals[0, :, 1]
+        else:
+            sv = shap_vals[0]
+
         raw_vals = df_input[feature_cols].iloc[0].to_dict()
 
         top_drivers = sorted(
-            zip(feature_cols, shap_vals),
+            zip(feature_cols, sv),
             key=lambda x: x[1],
             reverse=True
         )[:3]
@@ -163,15 +186,16 @@ def predict_churn(customer: CustomerPayload):
         top_feat_names = [f for f, _ in top_drivers]
         if customer.support_status == 'Unresolved_Complaint':
             action = "URGENT: Escalate open support ticket to Tier-2 specialist within 4 hours + issue 5GB apology data bonus."
-        elif contract == 'prepaid' and any(k in top_feat_names for k in ['days_since_last_recharge', 'recharge_velocity_ratio', 'recharge_trend']):
+        elif contract == 'prepaid' and any(k in top_feat_names for k in ['days_since_last_recharge', 'recharge_velocity_ratio', 'recharge_trend', 'is_prepaid_inactive_30d']):
             action = "PREPAID RETENTION: Send automated SMS reload offer ('Reload Rs. 200 today and get 100% bonus data for 7 days')."
-        elif contract == 'postpaid' and any(k in top_feat_names for k in ['overdue_days', 'late_fee_lkr']):
+        elif contract == 'postpaid' and any(k in top_feat_names for k in ['overdue_days', 'late_fee_lkr', 'has_overdue_bill']):
             action = "POSTPAID RETENTION: Offer late-fee waiver upon bill settlement + suggest flexible installment plan."
         else:
             action = "GENERAL RETENTION: Enrol in Loyalty Bonus Tier and offer 2GB weekend data pack."
 
         return {
             "customer_id": customer.customer_id,
+            "champion_model": champion_name,
             "churn_probability": round(prob, 4),
             "optimal_threshold": opt_thresh,
             "is_flagged_at_risk": is_flagged,
