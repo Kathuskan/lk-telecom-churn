@@ -1,0 +1,17 @@
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# Data Files (Keep scripts, ignore raw/gold datasets in git)
+*.csv
+*.parquet
+*.pkl
+
+# IDE / OS specific
+.vscode/
+.DS_Store
+shap_global_prepaid.png
